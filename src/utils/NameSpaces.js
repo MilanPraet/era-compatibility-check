@@ -102,7 +102,9 @@ export const ERA = {
     solNature: `${BASE_URI}solNature`,
     track: `${BASE_URI}track`,
     linkedTo: `${BASE_URI}linkedTo`,
-    partOf: `${BASE_URI}partOf`
+    partOf: `${BASE_URI}partOf`,
+    CHRank: `${BASE_URI}CHRank`,
+    compoundWeight: `${BASE_URI}compoundWeight`
 }
 
 export const NAVIGS = {

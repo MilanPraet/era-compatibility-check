@@ -12,9 +12,15 @@ import {
     ABSTRACTION_ZOOM
 } from '../src/config/config.js';
 
+/*undici.setGlobalDispatcher(new undici.Dispatcher({
+    bodyTimeout: 120
+}))*/
+
+
+
 const GRAPH = 'http://era.europa.eu/knowledge-graph'
 const NTRIPLES = 'application/n-triples';
-const SPARQL = `https://linked.ec-dataplatform.eu/sparql?default-graph-uri=${GRAPH}&format=${NTRIPLES}&query=`;
+const SPARQL = `http://localhost:7200/repositories/Era-dataCH?default-graph-uri=${GRAPH}&format=${NTRIPLES}&query=`;
 
 const program = new commander.Command();
 
@@ -67,9 +73,9 @@ async function main() {
     const to = {};
 
     // Get reachable micro NetElements of FROM Operational Point
-    const fromMicroNEs = Utils.getMicroNetElements(fromId, graphStore)
+    let fromMicroNEs = Utils.getMicroNetElements(fromId, graphStore)
         .filter(ne => NG.nodes.has(ne.value))
-        .map(ne => ne.value);;
+    fromMicroNEs = fromMicroNEs.map(ne => ne.value);;
     const fromOp = Utils.getOPInfo(fromId, graphStore);
     const fromLabel = Utils.getLiteralInLanguage(fromOp[ERA.opName], 'en');
 
@@ -120,6 +126,9 @@ async function main() {
 }
 
 async function fetch(url, opts) {
+    opts.bodyTimeout = 120000
+    opts.headersTimeout = 120000
+    console.log(opts);
     const { body } = await undici.request(url, opts);
     return body;
 }

@@ -110,7 +110,30 @@ function processTopologyQuads(quads, NG) {
             // Got a era:linkedTo property that indicates a reachable node
             NG.setNode({
                 id: quad.subject.value,
-                nextNode: quad.object.value
+                nextNode: { to: quad.object.value }
+            });
+            //console.log("linkedTo found but isn't used anymore")
+        } else if (quad.predicate.value === ERA.compoundWeight) {
+            // Got a era:compoundWeight property that indicates a connections length
+            NG.setEdge({
+                id: quad.subject.value,
+                weight: quad.object.value
+            });
+        } else if (quad.predicate.value === ERA.chRank) {
+            // Got a era:chRank property that indicates a nodes rank in the hierarchy
+            //console.log(quad.subject.value);
+            NG.setNode({
+                id: quad.subject.value,
+                chRank: quad.object.value
+            });
+        } else if (quad.predicate.value.includes("netRelations")) {
+            // Got a connection  between two nodes
+            NG.setNode({
+                id: quad.subject.value,
+                nextNode: { 
+                    via: quad.predicate.value,
+                    to: quad.object.value
+                }
             });
         }
     }

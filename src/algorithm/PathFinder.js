@@ -5,6 +5,9 @@ import distance from '@turf/distance';
 import * as N3 from 'n3';
 import Utils from '../utils/Utils.js';
 import { NetworkGraph } from '../algorithm/NetworkGraph.js';
+import { buffer } from "d3";
+//import { intersection, path } from "d3";
+
 
 export class PathFinder extends EventEmitter {
     constructor(props) {
@@ -105,6 +108,307 @@ export class PathFinder extends EventEmitter {
         return ksp;
     }
 
+    async bidirectionalaStar({from, to, NG, perf}) {        
+        let forwardSearch = this.biaStarHalf({from, to, NG, perf});        
+        let backwardSearch = this.biaStarHalf({from: to, to: from, NG, perf});
+
+        let forwardBuffer = await forwardSearch.next();            
+        let backwardBuffer = await backwardSearch.next();
+
+        let midpoint
+
+        let forwardHit = 0;
+        let backwardHit = 0;
+
+        for (let el of forwardBuffer.value.explored) {
+            if (backwardBuffer.value.explored.has(el)) {
+                console.log(forwardBuffer.value.explored);
+                console.log(backwardBuffer.value.explored);
+                midpoint = el;
+                break;
+            }
+        }  
+
+        // allow to execcute both directions without both being blocked by tile fetches
+        let forward = new Promise(resolve => {
+            forwardSearch.next().then(value => resolve({i: 0, val: value}));
+            console.log('forwardHit: ' + ++forwardHit);
+        });
+        let backward = new Promise(resolve => {
+            backwardSearch.next().then(value => resolve({i: 1, val: value}));
+            console.log('backwardHit: ' + ++backwardHit);
+        });
+
+        let buffers = [
+            forward,
+            backward
+        ];
+        while (midpoint === undefined) {
+            // could be buffered and changed to promise.any
+            let { i , val } = await Promise.race(buffers);
+
+            // add new promise to buffer
+            if (i === 0) {
+                if (!(val.done)){                    
+                    buffers[i] = new Promise(resolve => {                        
+                        console.log('forwardHit: ' + ++forwardHit);
+                        forwardSearch.next().then(value => resolve({i:0, val: value}));
+                    });
+                    forwardBuffer = val;
+                } else buffers[i] = undefined;
+            } else {
+                if (!(val.done)) {
+                    buffers[i] = new Promise(resolve => {                        
+                        console.log('backwardHit: ' + ++backwardHit);
+                        backwardSearch.next().then(value => resolve({i:1, val: value}));
+                    });
+                    backwardBuffer = val;
+                } else buffers[i] = undefined;
+            }
+
+            // find intersection point of set
+            for (let el of forwardBuffer.value.explored) {
+                if (backwardBuffer.value.explored.has(el)) {
+                    midpoint = el;
+                }
+            }        
+        }
+        
+        // no path was found
+        if(!midpoint) return null;
+
+        // get correct midpoint node to be able to reconstruct the path
+        for (let key of forwardBuffer.value.pathMap.keys()) {
+            if (backwardBuffer.value.pathMap.has(key)) {
+                midpoint = key;
+                break;
+            }
+        }
+
+        let partA = forwardBuffer.value.rebuildPath(midpoint);
+        let partB = backwardBuffer.value.rebuildPath(midpoint);
+
+        // relax shortcuts TODO
+
+        // 1. send query using found edges as values
+        // 2. sparql property paths will relax all shortcuts of these edges
+        // 2.1 might need to recover netRelations ids from pathmap
+        // 3. reorder unordered sparql results and return path
+        partA.nodes = partA.nodes.concat(partB.nodes.slice(0, -1).reverse());
+        partA.length = partA.length - partB.nodes.at(-1).length + partB.length;
+        if (perf) perf.explored = forwardBuffer.value.explored.size + backwardBuffer.value.explored.size;
+        return partA;
+    }
+
+    async * biaStarHalf ({ from, to, NG, perf }) {
+        if (this.debug) console.debug('DEBUG: FROM: ', from);
+        if (this.debug) console.debug('DEBUG: TO: ', to);
+
+        // Nodes distance map
+        const pathMap = new Map();
+        // All the possible departure micro NetElements
+        const fromSet = new Set(from.microNEs);
+        // All the possible arrival micro NetElements
+        const toSet = new Set(to.microNEs);
+        // Set to store visited nodes
+        const explored = new Set();
+        // Set to avoid adding the same Node to the queue more than once 
+        const queued = new Set();
+        // Priority queue
+        const queue = new TinyQueue([], (a, b) => { return a.cost - b.cost });
+
+        // Add all starting NetElements to the queue with initial metrics
+        const initDist = from.lngLat ? distance(point(from.lngLat), point(to.lngLat)) : null;
+
+        for (const f of from.microNEs) {
+            queue.push({
+                id: f,
+                distance: initDist,
+                length: from.length || 0,
+                cost: 0
+            });
+            queued.add(f);
+        }
+
+        // In this variable we will store the found arrival NetElement
+        let dest = null;
+
+        let rebuildPath = (dest) => {
+            // Rebuild path
+            if (this.debug) console.debug('DEGUB: Resulting PathMap', pathMap);
+            let totLength = 0;
+            let node = pathMap.get(dest);
+            const path = { nodes: [{ id: dest, length: node.length, lngLat: node.lngLat }] };
+            totLength += node.length;
+
+            while (!fromSet.has(node.from)) {
+                const prevNode = { id: node.from };
+
+                // Get previous pathMap node
+                node = pathMap.get(node.from);
+                prevNode.length = node.length;
+                prevNode.lngLat = node.lngLat;
+
+                path.nodes.unshift(prevNode);
+                totLength += node.length;
+            }
+            path.nodes.unshift({ id: node.from, length: from.length, lngLat: from.lngLat });
+            path.length = totLength;
+
+            if (this.debug) console.debug('DEBUG: PATH: ', path);
+            return path;
+        }
+        while (queue.length) {
+            const here = queue.pop();
+            if (this.debug) console.debug('DEBUG: HERE: ', here);
+
+            // Arrived at destination
+            if (toSet.has(here.id)) {
+                dest = here.id;
+                break;
+            };
+
+            const hereNode = NG.nodes.get(here.id);
+            if (this.debug) console.debug('DEBUG: HERE\'s node: ', hereNode);
+
+            // Add micro and meso nodes to visited list
+            explored.add(here.id);
+            explored.add(hereNode.mesoElement)
+
+            // Skip if no there are no outgoing edges from this node, it means it is a dead end
+            if (hereNode.nextNodes.size > 0) {
+                // Iterate over the next reachable nodes
+                for (const [i, n] of hereNode.nextNodes.entries()) {
+                    const next = { id: n.to };
+                    let nextNode = NG.nodes.get(next.id);
+
+                    if (this.debug) {
+                        console.debug('DEBUG: NEXT: ', next);
+                        console.debug('DEBUG: NEXT node: ', nextNode);
+                    };
+
+                    // If undefined it means it was deliberately removed to find alternative paths, so skip it
+                    if (!nextNode) continue;
+                    // skip if lower in hierarchy
+                    if (hereNode.chRank > nextNode.chRank) continue;
+                    // Skip if previously explored
+                    if (explored.has(next.id) || explored.has(nextNode.mesoElement)) continue;
+
+                    /**
+                     * Is possible this next node belongs to a tile we haven't fetched yet.
+                     * We know it is so if the next node does not have next reachable nodes,
+                     * or does not have values for neither length and geolocation
+                     * or because its tile is not in the cache.
+                     * So get on it and fetch the tile!
+                    */
+
+                    if (nextNode.nextNodes.size === 0 || (nextNode.lngLat 
+                        && !this.tileCache.has(`${this.tilesBaseURI}/${this.zoom}/${Utils.longLat2Tile(nextNode.lngLat, this.zoom)}`))) {
+                        if (this.debug) console.debug('DEBUG: FETCHING TILE for node: ', next.id);
+                        const t0 = performance.now();
+                        nextNode = await this.getMissingTile(next.id, nextNode, NG, nextNode.chRank);
+                        perf.queryTime += performance.now() - t0;
+                        if (this.debug) console.debug('DEBUG: FETCHED NEXT node: ', nextNode);
+                        // If no nextNode is returned it means we reached the end of the line
+                        if (!nextNode) continue;
+                    }
+
+                    /**
+                    * Calculate the accumulated cost of this potential next node 
+                    * based on its length and distance to the destination.
+                    * First get the Haversine distance to the destination. If not possible to calculate 
+                    * (because NetElement is from a SoL and does not have a geolocation) 
+                    * then get the geolocation of the next node that belongs to an OP.
+                    * Fallback to use the distance of the current node.
+                    */
+                    let geoDist = null;
+                    if (nextNode.lngLat) {
+                        // Next node has geolocation
+                        geoDist = distance(point(nextNode.lngLat), point(to.lngLat));
+                    } else {
+                        let nn = nextNode;
+                        let hereId = here.id;
+                        let nextId = next.id;
+
+                        // Find the next node with geolocation. Consider the case where more than one consecutive
+                        // micro NetElements exist within a SoL.
+                        while (geoDist === null) {
+                            // Make sure to avoid reverse edges to prevent infinite loops
+                            const nextNextNodeId = this.getValidNextNode(hereId, nn);
+                            const nextNextNode = NG.nodes.get(nextNextNodeId);
+                            if (this.debug) console.debug('DEBUG: NEXT NEXT node', nextNextNode);
+                            if (nextNextNode) {
+                                if (nextNextNode.lngLat) {
+                                    geoDist = distance(point(nextNextNode.lngLat), point(to.lngLat));
+                                } else if (nextNextNode.depEdges.size > 0) {
+                                    hereId = nextId;
+                                    nextId = nextNextNodeId;
+                                    nn = nextNextNode;
+                                } else {
+                                    // We reached a tile limit. 
+                                    // Use the geolocation of the current node as approximate reference.
+                                    geoDist = here.distance;
+                                }
+                            } else {
+                                // We reached the end of a line. 
+                                // Use the geolocation of the current node as approximate reference.
+                                geoDist = here.distance;
+                            }
+                        }
+                    }
+
+                    // Get NetElement length if given otherwise use the latest known length from previous nodes.
+                    // Use a factor of 10 on the length to allow the geo distance heuristic to influence the queue.
+                    const length = nextNode.length / 10 || 0;
+                    if (this.debug) console.debug(`GEO-DISTANCE: ${geoDist}`);
+                    if (this.debug) console.debug(`TRACK LENGTH: ${length}`);
+
+                    // Assign cost of next node as the sum of above metrics plus the cost accumulated so far to get here.
+                    // also if a shortcut has been used add the cost of the nodes contracted in the shortcut
+                    let contracted = 0;
+                    if (NG.edges.has(n.via)) contracted = NG.edges.get(n.via);
+                    next.cost = geoDist + length + here.cost + contracted;
+
+                    // Register next node metrics
+                    next.distance = geoDist;
+                    next.length = length;
+
+                    // Add to the path map if it's a shorter route or a newly discovered node
+                    if (pathMap.has(next.id)) {
+                        if (next.cost < pathMap.get(next.id).cost) {
+                            pathMap.set(next.id, {
+                                from: here.id,
+                                cost: next.cost,
+                                length: nextNode.length || 0,
+                                lngLat: nextNode.lngLat
+                            });
+                            if (this.debug) console.debug('DEBUG: PathMap set: ', next.id, here.id, next.cost);
+                        }
+                    } else {
+                        pathMap.set(next.id, {
+                            from: here.id,
+                            via: n.via,
+                            cost: next.cost,
+                            length: nextNode.length || 0,
+                            lngLat: nextNode.lngLat
+                        });
+                        if (this.debug) console.debug('DEBUG: PathMap set: ', next.id, here.id, next.cost);
+                    }
+
+                    // Add to the queue
+                    if (!queued.has(next.id)) {
+                        queue.push(next);
+                        queued.add(next.id);
+                        if (this.debug) console.debug('DEBUG: Queued: ', next);
+                    }
+                }
+                if (this.debug) console.debug('DEBUG: *************************************');
+            }
+            yield { explored, pathMap, rebuildPath };
+        }
+        yield { explored, pathMap, rebuildPath };
+    }
+
     async aStar({ from, to, NG }) {
         if (this.debug) console.debug('DEBUG: FROM: ', from);
         if (this.debug) console.debug('DEBUG: TO: ', to);
@@ -159,7 +463,7 @@ export class PathFinder extends EventEmitter {
             if (hereNode.nextNodes.size > 0) {
                 // Iterate over the next reachable nodes
                 for (const [i, n] of hereNode.nextNodes.entries()) {
-                    const next = { id: n };
+                    const next = { id: n.to };
                     let nextNode = NG.nodes.get(next.id);
 
                     if (this.debug) {
@@ -240,7 +544,10 @@ export class PathFinder extends EventEmitter {
                     if (this.debug) console.debug(`TRACK LENGTH: ${length}`);
 
                     // Assign cost of next node as the sum of above metrics plus the cost accumulated so far to get here.
-                    next.cost = geoDist + length + here.cost;
+                    // also if a shortcut has been used add the cost of the nodes contracted in the shortcut
+                    let contracted = 0;
+                    if (NG.edges.has(n.via)) contracted = NG.edges.get(n.via);
+                    next.cost = geoDist + length + here.cost + contracted;
 
                     // Register next node metrics
                     next.distance = geoDist;
@@ -260,6 +567,7 @@ export class PathFinder extends EventEmitter {
                     } else {
                         pathMap.set(next.id, {
                             from: here.id,
+                            via: n.via,
                             cost: next.cost,
                             length: nextNode.length || 0,
                             lngLat: nextNode.lngLat
@@ -309,10 +617,11 @@ export class PathFinder extends EventEmitter {
         }
     }
 
-    async getMissingTile(mne, node, NG) {
+    async getMissingTile(mne, node, NG, rank = 0) {
         const coords = node.lngLat;
         if (coords) {
-            await this.fetchAbstractionTile({ coords, NG });
+            //console.log(`INFO: Fetching tile for ${node}`)
+            await this.fetchAbstractionTile({ coords, NG, rank });
             node = NG.nodes.get(mne);
 
             // Signal that a tile has been fetched
@@ -320,12 +629,14 @@ export class PathFinder extends EventEmitter {
 
             return node;
         } else {
-            throw new Error(`No geo coordinates found for ${mne}`);
+            console.log(JSON.stringify(mne));
+            throw new Error(`No geo coordinates found for ${JSON.stringify(mne)}`);
         }
     }
 
-    async fetchAbstractionTile({ coords, NG }) {
-        const tileUrl = `${this.tilesBaseURI}/${this.zoom}/${Utils.longLat2Tile(coords, this.zoom)}`
+    async fetchAbstractionTile({ coords, NG, rank }) {
+        //const tileUrl = `${this.tilesBaseURI}/${this.zoom}/${Utils.longLat2Tile(coords, this.zoom)/rank}`
+        let tileUrl = `${this.tilesBaseURI}/${this.zoom}/${Utils.longLat2Tile(coords, this.zoom)}`
         let res = null;
 
         if(this.fetch) {
@@ -335,6 +646,8 @@ export class PathFinder extends EventEmitter {
         }
 
         // Register fetched tile in the cache
+        let index = tileUrl.lastIndexOf('/')
+        tileUrl = tileUrl.slice(0, index);
         this.tileCache.add(tileUrl);
 
         const rdfParser = N3.Parser ? new N3.Parser({ format: 'N-Triples' }) 
