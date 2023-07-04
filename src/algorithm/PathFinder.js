@@ -155,7 +155,10 @@ export class PathFinder extends EventEmitter {
                         forwardSearch.next().then(value => resolve({i:0, val: value}));
                     });
                     forwardBuffer = val;
-                } else buffers[i] = undefined;
+                } else {
+                    if (buffers.size != 2) break;
+                    buffers = [buffers[1]]
+                }
             } else {
                 if (!(val.done)) {
                     buffers[i] = new Promise(resolve => {                        
@@ -163,7 +166,10 @@ export class PathFinder extends EventEmitter {
                         backwardSearch.next().then(value => resolve({i:1, val: value}));
                     });
                     backwardBuffer = val;
-                } else buffers[i] = undefined;
+                } else {
+                    if (buffers.size != 2) break;
+                    buffers = [buffers[0]]
+                }
             }
 
             // find intersection point of set
@@ -258,6 +264,7 @@ export class PathFinder extends EventEmitter {
             if (this.debug) console.debug('DEBUG: PATH: ', path);
             return path;
         }
+        
         while (queue.length) {
             const here = queue.pop();
             if (this.debug) console.debug('DEBUG: HERE: ', here);
@@ -451,6 +458,8 @@ export class PathFinder extends EventEmitter {
                 dest = here.id;
                 break;
             };
+            //console.log("trying to find: ");
+            //console.log(explored)
 
             const hereNode = NG.nodes.get(here.id);
             if (this.debug) console.debug('DEBUG: HERE\'s node: ', hereNode);
@@ -466,7 +475,7 @@ export class PathFinder extends EventEmitter {
                     const next = { id: n.to };
                     let nextNode = NG.nodes.get(next.id);
 
-                    if (this.debug) {
+                    if (this.Ndebug) {
                         console.debug('DEBUG: NEXT: ', next);
                         console.debug('DEBUG: NEXT node: ', nextNode);
                     };
@@ -629,7 +638,7 @@ export class PathFinder extends EventEmitter {
 
             return node;
         } else {
-            console.log(JSON.stringify(mne));
+            //console.log(JSON.stringify(mne));
             throw new Error(`No geo coordinates found for ${JSON.stringify(mne)}`);
         }
     }
@@ -646,8 +655,8 @@ export class PathFinder extends EventEmitter {
         }
 
         // Register fetched tile in the cache
-        let index = tileUrl.lastIndexOf('/')
-        tileUrl = tileUrl.slice(0, index);
+        //let index = tileUrl.lastIndexOf('/')
+        //tileUrl = tileUrl.slice(0, index);
         this.tileCache.add(tileUrl);
 
         const rdfParser = N3.Parser ? new N3.Parser({ format: 'N-Triples' }) 

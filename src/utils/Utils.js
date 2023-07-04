@@ -2,6 +2,8 @@ import wktParse from 'wellknown';
 import * as rdfString from 'rdf-string';
 import rdfjs from '@rdfjs/data-model';
 import { a, ERA, GEOSPARQL, WGS84, RDFS, OWL, RDF } from './NameSpaces.js';
+import { point } from '@turf/helpers';
+import distance from '@turf/distance';
 
 const { stringQuadToQuad } = rdfString;
 const { namedNode, literal, blankNode } = rdfjs;
@@ -71,6 +73,30 @@ function rebuildQuad(str) {
     return stringQuadToQuad(str);
 }
 
+/**
+ * This horrible hack is needed because when one writes triples
+ * about a certain subject in a Graphy.js graph store
+ * and then one reads them (via graph.match()),
+ * is not possible to add more triples about that same subject afterwards.
+ * The reason for this is because a Symbol(has-descendents) property 
+ * is added to the subject's index during graph.match(),
+ * which prevents new triples to be added via graph.add().
+ * This is probably a bug in Graphy.js but afaik is not actively maintained anymore.
+ * 
+ * So what happens here is that we check if the subject's index
+ * has the Symbol(has-descendents) and if so, delete it. 
+ */
+function handleWeirdStoreIssue(quad, graph) {
+    if (graph._h_quad_tree['*']) {
+        const subIndex = graph._h_quad_tree['*'][`>${quad.subject.value}`];
+        if (subIndex) {
+            const sym = Object.getOwnPropertySymbols(subIndex)
+                .find(sym => String(sym) === "Symbol(has-descendents)");
+            if (sym) delete subIndex[sym];
+        }
+    }
+}
+
 function processTopologyQuads(quads, NG) {
     for (const quad of quads) {
         /**
@@ -87,6 +113,18 @@ function processTopologyQuads(quads, NG) {
             NG.setNode({
                 id: quad.subject.value,
                 lngLat: wktParse(quad.object.value).coordinates
+            });
+        } else if (quad.predicate.value === ERA.locStart) {
+            // Got node geo coordinates
+            NG.setNode({
+                id: quad.subject.value,
+                locStart: wktParse(quad.object.value).coordinates
+            });
+        } else if (quad.predicate.value === ERA.locEnd) {
+            // Got node geo coordinates
+            NG.setNode({
+                id: quad.subject.value,
+                locEnd: wktParse(quad.object.value).coordinates
             });
         } else if (quad.predicate.value === ERA.length) {
             // Got era:length property
@@ -112,27 +150,38 @@ function processTopologyQuads(quads, NG) {
                 id: quad.subject.value,
                 nextNode: { to: quad.object.value }
             });
-            //console.log("linkedTo found but isn't used anymore")
+            console.log("linkedTo found but isn't used anymore")
         } else if (quad.predicate.value === ERA.compoundWeight) {
             // Got a era:compoundWeight property that indicates a connections length
             NG.setEdge({
                 id: quad.subject.value,
                 weight: quad.object.value
             });
-        } else if (quad.predicate.value === ERA.chRank) {
+        } else if (quad.predicate.value === ERA.CHRank) {
             // Got a era:chRank property that indicates a nodes rank in the hierarchy
             //console.log(quad.subject.value);
             NG.setNode({
                 id: quad.subject.value,
+                //chRank: Number(quad.object.value),
                 chRank: quad.object.value
             });
         } else if (quad.predicate.value.includes("netRelations")) {
             // Got a connection  between two nodes
+            /*if (/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/.test(quad.predicate.value)) {
+                console.log("WE HAVE PROCESSED A SHORTCUT");
+            }*/
             NG.setNode({
                 id: quad.subject.value,
                 nextNode: { 
                     via: quad.predicate.value,
                     to: quad.object.value
+                }
+            });
+            NG.setNode({
+                id: quad.object.value,
+                prevNode: { 
+                    via: quad.predicate.value,
+                    to: quad.subject.value
                 }
             });
         }
@@ -638,7 +687,31 @@ function getLiteralInLanguage(values, language) {
     }
 }
 
+function defaultDistance() {
+    return 1;
+}
+
+function defaultHeuristic() {
+    return 0;
+}
+
+function harvesineDistance(a, b) {
+    // Harvesine distance in meters
+    return distance(point(a), point(b), { units: "meters" });
+}
+
+function euclideanDistance(a, b) {
+    const dx = a[0] - b[0];
+    const dy = a[1] - b[1];
+    return Math.sqrt(dx * dx + dy * dy);
+}
+
 export default {
+    defaultDistance,
+    defaultHeuristic,
+    harvesineDistance,
+    euclideanDistance,
+
     concatToPosition,
     long2Tile,
     lat2Tile,

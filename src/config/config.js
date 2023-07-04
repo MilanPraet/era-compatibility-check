@@ -1,5 +1,6 @@
 
 //const BASE_URI = '${BASE_URI}';
+//const BASE_URI = 'http://n073-09b.wall1.ilabt.iminds.be:3000'
 const BASE_URI = 'http://127.0.0.1:3000'; // on imec premises
 //const BASE_URI = 'https://data-interop.era.europa.eu'; // on DIGIT premises
 //const ZOOM = '${ZOOM}';

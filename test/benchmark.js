@@ -1,7 +1,7 @@
 import commander from 'commander';
 import GraphStore from '@graphy/memory.dataset.fast';
 import { NetworkGraph } from '../src/algorithm/NetworkGraph.js';
-import { PathFinder } from '../src/algorithm/PathFinderNew.js';
+import { PathFinder } from '../src/algorithm/PathfinderNew.js';
 import undici from 'undici';
 import N3 from "n3";
 import Utils from '../src/utils/Utils.js';
@@ -20,6 +20,7 @@ import jsonlParser from "stream-json/jsonl/Parser.js";
 import { delimiter } from 'path';
 import {stringify} from 'csv-stringify';
 import { resourceLimits } from 'worker_threads';
+import colornames from '../src/styles/colors.js';
 
 const program = new commander.Command();
 
@@ -34,12 +35,16 @@ program.parse(process.argv);
 
 const GRAPH = 'http://era.europa.eu/knowledge-graph'
 const NTRIPLES = 'application/n-triples';
-const SPARQL = `http://n073-16a.wall1.ilabt.iminds.be:7200/repositories/Era-dataCH?default-graph-uri=${GRAPH}&format=${NTRIPLES}&query=`;
+//const SPARQL = 'http://n063-13a.wall2.ilabt.iminds.be:8890/sparql?query=';
+//const SPARQL = 'http://localhost:8890/sparql?query=';
+const SPARQL = `http://localhost:7200/repositories/Era-dataCH2Seperated?format=${NTRIPLES}&query=`;
+//const SPARQL = `http://n073-16a.wall1.ilabt.iminds.be:7200/repositories/Era-dataCH?default-graph-uri=${GRAPH}&format=${NTRIPLES}&query=`;
+//const SPARQL = 
 
 // Logging level
-const debug = program.debug;
+const debug = 0;//program.debug;
 // Topology zoom
-const tz = ABSTRACTION_ZOOM;
+const tz = 10 //ABSTRACTION_ZOOM; //12 most of times smallest to fetch region
 // Init KG store
 let graphStore = GraphStore();
 // Init Network Graph
@@ -125,12 +130,20 @@ async function testRoute(fromId, toId, perf) {
         fetch,
         debug
     });
+    /*const planner = new NBAStar({
+        NG,        
+        zoom: tz,
+        tilesBaseURL:   ABSTRACTION_TILES,
+        distance: Utils.harvesineDistance,
+        heuristic: Utils.euclideanDistance
+    })*/
 
     perf.preparation = performance.now() - prepT0; 
 
     const t0 = performance.now();
     // Calculate route
-    const path = await pathFinder.aStar({ from, to, NG, perf });
+    const path = await pathFinder.bidirectionalaStar({ from, to, NG, perf, debug });
+    //const path = await planner.findPath(from, to);
     const t1 = performance.now();
     //console.info(`INFO: Found route: `, JSON.stringify(path, null, 3));
     //console.info('Route caluclated in', t1 - t0, 'ms');
@@ -142,9 +155,10 @@ async function testRoute(fromId, toId, perf) {
 }
 
     async function fetch(url, opts) {
-        //opts.bodyTimeout = 300000
-        //opts.headersTimeout = 300000
+        opts.bodyTimeout = 600000
+        opts.headersTimeout = 600000
     const { body } = await undici.request(url, opts);
+    console.log(tileCache.size);
     return body;
 }
 
@@ -155,19 +169,22 @@ async function fetchOPLocation(ops) {
         return `(<${op}>)`;
     }).join('\n');
 
-    const query = `
-    PREFIX wgs: <http://www.w3.org/2003/01/geo/wgs84_pos#>
+    const query = `PREFIX wgs: <http://www.w3.org/2003/01/geo/wgs84_pos#>
     PREFIX geosparql: <http://www.opengis.net/ont/geosparql#>
     PREFIX era: <http://data.europa.eu/949/>
     CONSTRUCT WHERE {
         ?op wgs:location ?loc_0.
         ?loc_0 geosparql:asWKT ?wkt_0.
-        VALUES (?op) {
+        VALUES (?op) { #when using graphdb instead of virtuoso
             ${values}
         }
     }`;
 
-    const opts = { headers: { Accept: NTRIPLES } };
+    /*
+        FILTER(?op = <${ops[0]}> || ?op = <${ops[1]}>)
+        */
+
+    const opts = { headers: { Accept: NTRIPLES }};
     let triples;
     try {
     triples = await fetch(SPARQL + encodeURIComponent(query), opts);
@@ -204,9 +221,11 @@ async function fetchAbsTile({ coords }) {
     if (!tileCache.has(tileUrl)) {
         tileCache.add(tileUrl);
         console.info('INFO: Fetching tile ', tileUrl);
+        const before = NG.nodes.size;
         const quads = new N3.Parser({ format: 'N-triples' })
             .parse(await (await fetch(tileUrl, { headers: { Accept: NTRIPLES } })).text());
         Utils.processTopologyQuads(quads, NG);
+        console.log(`${tileUrl} added ${NG.nodes.size - before} nodes to the graph`)
     }
 }
 
@@ -324,8 +343,8 @@ function loadQuerySet() {
 }
 
 async function testRoutes() {
-    //let routes = JSON.parse(fs.readFileSync("res\\testRoutesAstar.json", 'utf8'));
-    let routes = JSON.parse(fs.readFileSync("C:\\Users\\milan\\Documents\\Milan\\Ugent\\1ste Ma\\Masterproef\\test\\CHGeneratorjs\\CHresults\\EraFullNoDup\\testRoutesAstar.json", 'utf8'));
+    let routes = JSON.parse(fs.readFileSync("res\\testRoutesDFS.json", 'utf8'));
+    //let routes = JSON.parse(fs.readFileSync("C:\\Users\\milan\\Documents\\Milan\\Ugent\\1ste Ma\\Masterproef\\test\\CHGeneratorjs\\CHresults\\EraFullNoDup\\testRoutesAstar.json", 'utf8'));
     let goodroutes = [];
     //let routes = await loadQuerySet();
 
@@ -333,7 +352,7 @@ async function testRoutes() {
     const writestream = fs.createWriteStream("res\\goodroutes.csv");
 
     //for (let i = Math.floor(routes.length / 2); i >= Math.floor(routes.length / 2) - 100; i--) {
-    for (let i = 1501; i < routes.length; i++) {
+    for (let i = 0; i < routes.length; i++) {
         try {           
             let route = routes[i]; 
             graphStore = GraphStore();
@@ -345,20 +364,26 @@ async function testRoutes() {
             if (!ops[0] || !ops[1]) continue;
             let perf = {};
             perf.queryTime = 0;
+            let start = performance.now();
             let path = await testRoute(ops[0], ops[1], perf);
+            const time = performance.now() - start;
             console.log(perf.tiles);
             console.log(path);
             if (path) {
                 writestream.write(`${ops[0]};${ops[1]}}\n`);
                 goodroutes.push(route);
+                console.log(`route number: ${i} is a good route`);
                 console.log("dijkstra rank is: " + perf.explored);
                 console.log("total routes found: " + goodroutes.length);
+                console.log("time taken to calculate route: ", time);
+                console.log("tiles fetched: " + perf.tiles)
             }
         } catch (err) {
             console.log(err);
         }
     }    
     writestream.close();
+    fs.writeFileSync('res\\goodroutes.csv', JSON.stringify(goodroutes));
 }
 
 async function testR(from, to) {
@@ -376,7 +401,7 @@ const printQueries = async () => {
 
 //printQueries();
 
-function readNetworkGraph() {
+/*function readNetworkGraph() {
     NG = new NetworkGraph();
     let input = fs.readFileSync("C:\\Users\\milan\\Documents\\Milan\\Ugent\\1ste Ma\\Masterproef\\NG full dump\\OP.trig", 'utf-8');
     let quads = new N3.Parser({ format: 'TriG' }).parse(input);
@@ -384,11 +409,60 @@ function readNetworkGraph() {
     quads = new N3.Parser({ format: 'TriG' }).parse(fs.readFileSync("C:\\Users\\milan\\Documents\\Milan\\Ugent\\1ste Ma\\Masterproef\\NG full dump\\SoL.trig", 'utf-8'));
     Utils.processTopologyQuads(quads, NG);
     NG.tripleStore = graphStore;
-}
+}*/
 
 //readNetworkGraph();
 //testRoutes();
 
 
-testRoutes()
-//testR("http://data.europa.eu/949/functionalInfrastructure/operationalPoints/PT38083", "http://data.europa.eu/949/functionalInfrastructure/operationalPoints/LTVilnius")
+//testRoutes()
+//https://linked.ec-dataplatform.eu/describe/?url=http://data.europa.eu/949/functionalInfrastructure/operationalPoints/BEFSDA
+//https://linked.ec-dataplatform.eu/describe/?url=http://data.europa.eu/949/functionalInfrastructure/operationalPoints/BEGKA
+//await testR("http://data.europa.eu/949/functionalInfrastructure/operationalPoints/PT38083", "http://data.europa.eu/949/functionalInfrastructure/operationalPoints/LTVilnius")
+
+// test single shortcut
+//testR("http://data.europa.eu/949/functionalInfrastructure/operationalPoints/ATEl%20H3", "http://data.europa.eu/949/functionalInfrastructure/operationalPoints/LTVilnius")//", "http://data.europa.eu/949/functionalInfrastructure/operationalPoints/LTVilnius")
+
+//gent ostend
+// await testR("http://data.europa.eu/949/functionalInfrastructure/operationalPoints/BEFSDA", "http://data.europa.eu/949/functionalInfrastructure/operationalPoints/BEGKA");
+
+// deinze kortemark
+await testR("http://data.europa.eu/949/functionalInfrastructure/operationalPoints/BEFD", "http://data.europa.eu/949/functionalInfrastructure/operationalPoints/BEFTK") // BEFD --> BEFTK
+// end node of branch causes error1
+//testR("http://data.europa.eu/949/functionalInfrastructure/operationalPoints/IT02554", "http://data.europa.eu/949/functionalInfrastructure/operationalPoints/IT02557")
+//Mollem --> 
+//testR("http://data.europa.eu/949/functionalInfrastructure/operationalPoints/BEFKW", "http://data.europa.eu/949/functionalInfrastructure/operationalPoints/BEFEK") // BEFHL --> BEFKW
+
+
+// get debug map chunk info
+/*let quads = new N3.Parser({ format: 'turtle' }).parse(fs.readFileSync('C:\\Users\\milan\\OneDrive - UGent\\1ste ma\\Computergrafiek\\query-result.ttl', 'utf-8'));
+Utils.processTopologyQuads(quads, NG);
+quads = new N3.Parser({ format: 'turtle' }).parse(fs.readFileSync('C:\\Users\\milan\\OneDrive - UGent\\1ste ma\\Computergrafiek\\SoLcon.ttl', 'utf-8'));
+Utils.processTopologyQuads(quads, NG);
+quads = new N3.Parser({ format: 'turtle' }).parse(fs.readFileSync('C:\\Users\\milan\\OneDrive - UGent\\1ste ma\\Computergrafiek\\SoLOut.ttl', 'utf-8'));
+Utils.processTopologyQuads(quads, NG);
+console.log(JSON.stringify(Object.fromEntries(NG.nodes), null, 2));
+let output = [];
+let idToNumber = new Map();
+for (const el of NG.nodes.entries()) {
+    let id;
+    if (!idToNumber.has(id)) idToNumber.set(el[0], idToNumber.size);
+    const obj = { id: idToNumber.get(el[0]), length: el[1].length, rank: el[1].chRank }
+    const to = [...el[1].nextNodes].map((next) => {
+        if (!idToNumber.has(next.to)) idToNumber.set(next.to, idToNumber.size);
+        return idToNumber.get(next.to);
+    })
+    obj.to = to;
+    output.push(obj);
+}
+console.log(JSON.stringify(output, null, 2));*/
+
+// generate graphviz reperesentation
+//let quads = new N3.Parser({ format: 'n3' }).parse(fs.readFileSync('D:\\Nieuwe map\\1371', 'utf-8'));
+//Utils.processTopologyQuads(quads, NG);
+//NG.visualize("graphvizTestCrossed.dot")
+
+//console.log(translation);
+
+// check for shortcuts in NG
+/* Array.from(NG.nodes.entries()).map(([key, value]) => value).filter(value => Array.from(value.nextNodes).some(iri => /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/.test(iri.via))) */

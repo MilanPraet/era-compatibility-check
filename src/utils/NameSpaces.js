@@ -104,6 +104,8 @@ export const ERA = {
     linkedTo: `${BASE_URI}linkedTo`,
     partOf: `${BASE_URI}partOf`,
     CHRank: `${BASE_URI}CHRank`,
+    locStart: `${BASE_URI}locStart`,
+    locEnd: `${BASE_URI}locEnd`,
     compoundWeight: `${BASE_URI}compoundWeight`
 }
 
